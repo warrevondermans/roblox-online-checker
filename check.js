@@ -1,59 +1,76 @@
 const fetch = require("node-fetch");
 const fs = require("fs");
 
-const USERS = [
-    { id: process.env.ROBLOX_USER_1, name: "User 1" },
-    { id: process.env.ROBLOX_USER_2, name: "User 2" }
+const users = [
+  { id: process.env.ROBLOX_USER_1, name: "User 1" },
+  { id: process.env.ROBLOX_USER_2, name: "User 2" }
 ];
 
-const WEBHOOK_URL = process.env.DISCORD_WEBHOOK;
+const webhook = process.env.DISCORD_WEBHOOK;
 
-// Load previous state (if exists)
-let previousState = {};
+// Load previous state
+let state = {};
 if (fs.existsSync("state.json")) {
-    previousState = JSON.parse(fs.readFileSync("state.json", "utf8"));
+  state = JSON.parse(fs.readFileSync("state.json"));
 }
 
 async function getPresence(userId) {
-    const res = await fetch("https://presence.roblox.com/v1/presence/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userIds: [userId] })
-    });
+  const res = await fetch(`https://presence.roblox.com/v1/presence/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userIds: [userId] })
+  });
 
-    const data = await res.json();
-    return data.userPresences[0].userPresenceType; // 0 = offline, 1/2/3 = online
+  const data = await res.json();
+  return data.userPresences[0].userPresenceType === 2 ? "online" : "offline";
 }
 
-async function sendDiscordMessage(msg) {
-    await fetch(WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: msg })
-    });
+async function sendDiscord(msg) {
+  await fetch(webhook, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: msg })
+  });
 }
 
 (async () => {
-    let newState = {};
+  for (const user of users) {
+    const currentStatus = await getPresence(user.id);
+    const prev = state[user.id] || {
+      status: "offline",
+      lastChange: Date.now(),
+      uptimeMinutes: 0
+    };
 
-    for (const user of USERS) {
-        const presence = await getPresence(user.id);
-        const wasOnline = previousState[user.id] === 1;
-        const isOnline = presence !== 0;
+    // If status changed
+    if (currentStatus !== prev.status) {
+      const now = Date.now();
+      const minutes = Math.floor((now - prev.lastChange) / 60000);
 
-        // Online event (only once)
-        if (!wasOnline && isOnline) {
-            await sendDiscordMessage(`${user.name} is now **ONLINE**`);
-        }
+      if (currentStatus === "online") {
+        await sendDiscord(`${user.name} is now ONLINE (was offline for ${minutes} minutes)`);
+      } else {
+        await sendDiscord(`${user.name} went OFFLINE after being online for ${minutes} minutes`);
+      }
 
-        // Offline event
-        if (wasOnline && !isOnline) {
-            await sendDiscordMessage(`${user.name} is now **OFFLINE**`);
-        }
+      // Update state
+      state[user.id] = {
+        status: currentStatus,
+        lastChange: now,
+        uptimeMinutes: minutes
+      };
+    } else {
+      // No change → update uptime counter
+      const now = Date.now();
+      const minutes = Math.floor((now - prev.lastChange) / 60000);
 
-        newState[user.id] = isOnline ? 1 : 0;
+      state[user.id] = {
+        status: currentStatus,
+        lastChange: prev.lastChange,
+        uptimeMinutes: minutes
+      };
     }
+  }
 
-    // Save new state
-    fs.writeFileSync("state.json", JSON.stringify(newState));
+  fs.writeFileSync("state.json", JSON.stringify(state));
 })();
